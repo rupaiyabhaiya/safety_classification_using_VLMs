@@ -9,6 +9,7 @@ from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration
 import torch
 import matplotlib.pyplot as plt
 from qwen_vl_utils import process_vision_info
+import json
 
 # ---------------------------
 # Argument Parsing
@@ -16,11 +17,12 @@ from qwen_vl_utils import process_vision_info
 parser = argparse.ArgumentParser(description="Run Qwen-VL on local image dataset.")
 parser.add_argument("--threshold", type=float, default=0.9, help="Threshold for nudity probability.")
 parser.add_argument("--num_workers", type=int, default=12, help="Number of parallel workers for image loading.")
-parser.add_argument("--policy_type", type=str, default="sexually_explicit", choices=["sexually_explicit", "dangerous_content", "violence_gore"], help="Policy type to evaluate.")
+parser.add_argument("--policy_type", type=str, default="sexually_explicit", choices=["sexually_explicit", "dangerous_content", "violence_gore", "human_nudity"], help="Policy type to evaluate.")
 parser.add_argument("--image_root", type=str, default="safe", help="Root directory containing images.")
 parser.add_argument("--output_dir", type=str, default="image_scores_qwen", help="Output directory containing images.")
 args = parser.parse_args()
 
+device = "cuda"
 # ---------------------------
 # Path Setup
 # ---------------------------
@@ -32,6 +34,7 @@ os.makedirs(output_dir, exist_ok=True)
 # Define Policy Prompt
 # ---------------------------
 policy_definitions = {
+    "human_nudity" : "The image shall not contain content that depicts human nudity, specifically the exposure of unclothed body parts (e.g., genitalia, ass, breasts, armpits, belly, feet).",
     "sexually_explicit": "The image shall not contain content that depicts explicit or graphic sexual acts (e.g., pornography, erotic nudity, depictions of rape or sexual assault).",
     "dangerous_content": "The image shall not contain content that facilitates or encourages activities that could cause real-world harm (e.g., building firearms and explosive devices, promotion of terrorism, instructions for suicide).",
     "violence_gore": "The image shall not contain content that depicts shocking, sensational, or gratuitous violence (e.g., excessive blood and gore, gratuitous violence against animals, extreme injury or moment of death)."
@@ -98,14 +101,14 @@ def main():
     model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
         model_id, 
         torch_dtype="auto", 
-        device_map="auto"
+        device_map=device
     ).eval()
 
     # Step 3: GPU Inference
     unsafe_paths = []
     batch_size = 1  # Process one image at a time
     progress_bar = tqdm(range(0, len(image_data), batch_size), desc="Running Qwen-VL")
-
+    answer = {}
     for i in progress_bar:
         batch = image_data[i:i + batch_size]
         if not batch:
@@ -155,20 +158,33 @@ def main():
             response_text = generated_text[0]
 
             yes_score, no_score = parse_qwen_response(response_text)
+            answer[path] = (yes_score, no_score)
 
-            # Plotting
-            fig, ax = plt.subplots(figsize=(6, 8))
-            ax.imshow(img)
-            ax.axis('off')
-            plt.title(os.path.basename(path), fontsize=10)
-            plt.figtext(0.5, 0.02, f"Yes score: {yes_score:.3f} | No score: {no_score:.3f}", ha="center", fontsize=12)
+            # # Plotting
+            # fig, ax = plt.subplots(figsize=(6, 8))
+            # ax.imshow(img)
+            # ax.axis('off')
+            # plt.title(os.path.basename(path), fontsize=10)
+            # plt.figtext(0.5, 0.02, f"Yes score: {yes_score:.3f} | No score: {no_score:.3f}", ha="center", fontsize=12)
             
-            plot_name = f"qwen_scores_{os.path.basename(path).rsplit('.', 1)[0]}.pdf"
-            plot_path = os.path.join(output_dir, plot_name)
-            plt.savefig(plot_path, bbox_inches='tight')
-            plt.close(fig)
+            # plot_name = f"qwen_scores_{os.path.basename(path).rsplit('.', 1)[0]}.pdf"
+            # plot_path = os.path.join(output_dir, plot_name)
+            # plt.savefig(plot_path, bbox_inches='tight')
+            # plt.close(fig)
 
             if yes_score > args.threshold:
+                # Plotting
+                fig, ax = plt.subplots(figsize=(6, 8))
+                ax.imshow(img)
+                ax.axis('off')
+                plt.title(os.path.basename(path), fontsize=10)
+                plt.figtext(0.5, 0.02, f"Yes score: {yes_score:.3f} | No score: {no_score:.3f}", ha="center", fontsize=12)
+                
+                plot_name = f"qwen_scores_{os.path.basename(path).rsplit('.', 1)[0]}.pdf"
+                plot_path = os.path.join(output_dir, plot_name)
+                plt.savefig(plot_path, bbox_inches='tight')
+                plt.close(fig)
+
                 unsafe_paths.append(path)
 
             progress_bar.set_description(
@@ -183,6 +199,8 @@ def main():
             print(f"An error occurred processing image {i+1} ({paths[0]}): {e}")
             continue
 
+    with open(os.path.join(output_dir, "qwen_image_scores.json"), "w") as f:
+        json.dump(answer, f, indent=4)
     print(f"\n🎉 DONE! Total unsafe images found: {len(unsafe_paths)}")
 
 if __name__ == "__main__":
